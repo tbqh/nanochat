@@ -46,6 +46,8 @@ parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (e
 # FP8 training
 parser.add_argument("--fp8", action="store_true", help="enable FP8 training (requires H100+ GPU and torchao)")
 parser.add_argument("--fp8-recipe", type=str, default="tensorwise", choices=["rowwise", "tensorwise"], help="FP8 scaling recipe: tensorwise (faster, recommended) or rowwise (more accurate but slower)")
+# NVFP4 training
+parser.add_argument("--nvfp4", action="store_true", help="enable NVFP4 training (requires Blackwell GPU and torchao)")
 # Model architecture
 parser.add_argument("--depth", type=int, default=20, help="depth of the Transformer model")
 parser.add_argument("--aspect-ratio", type=int, default=64, help="model_dim = depth * aspect_ratio")
@@ -164,6 +166,10 @@ if resuming:
 # -----------------------------------------------------------------------------
 # FP8 training initialization and management (this has to be done before torch.compile)
 
+# Validate FP8/NVFP4 mutual exclusion
+if args.fp8 and args.nvfp4:
+    raise ValueError("Cannot use both --fp8 and --nvfp4. Choose one.")
+
 # Convert Linear layers to Float8Linear if --fp8 is set
 if args.fp8:
     if device_type != "cuda":
@@ -190,6 +196,19 @@ if args.fp8:
         num_fp8 = sum(1 for m in model.modules() if 'Float8' in type(m).__name__)
         num_skipped = num_linear - num_fp8
         print0(f"✓ FP8 training enabled ({args.fp8_recipe} scaling) - converted {num_fp8}/{num_linear} linear layers, skipped {num_skipped} (too small)")
+
+# Convert Linear layers to NVFP4 if --nvfp4 is set
+if args.nvfp4:
+    if device_type != "cuda":
+        print0("Warning: NVFP4 training requires CUDA, ignoring --nvfp4 flag")
+    else:
+        from nanochat.nvfp4 import convert_to_nvfp4_training, nvfp4_module_filter
+        import torch.nn as nn
+
+        num_linear = sum(1 for m in model.modules() if isinstance(m, nn.Linear))
+        _, num_nvfp4 = convert_to_nvfp4_training(model, module_filter_fn=nvfp4_module_filter)
+        num_skipped = num_linear - num_nvfp4
+        print0(f"✓ NVFP4 training enabled - quantized {num_nvfp4}/{num_linear} linear layers, skipped {num_skipped}")
 
 # Context manager to temporarily disable FP8 so that model evaluation remains in BF16
 @contextmanager
